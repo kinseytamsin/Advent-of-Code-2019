@@ -28,7 +28,7 @@ fn fuel_required(mass: i32) -> i32 { mass/3 - 2 }
 
 fn fuel_required_recursive(mass: i32) -> i32 {
     let fuel_req_iter = FuelReq::new(mass);
-    fuel_req_iter.fold(0, |acc, x| acc + x)
+    fuel_req_iter.sum()
 }
 
 fn main() -> std::io::Result<()> {
