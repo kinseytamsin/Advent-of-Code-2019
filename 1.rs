@@ -1,6 +1,9 @@
-use std::fs::File;
-use std::io::BufReader;
-use std::io::prelude::*;
+extern crate rayon;
+
+use std::fs;
+use std::io;
+
+use rayon::prelude::*;
 
 struct FuelReq { curr: i32 }
 
@@ -31,18 +34,22 @@ fn fuel_required_recursive(mass: i32) -> i32 {
     fuel_req_iter.sum()
 }
 
-fn main() -> std::io::Result<()> {
-    let f = File::open("1.txt")?;
-    let buf_reader = BufReader::new(f);
-    let lines_iter = buf_reader.lines();
-    let masses = lines_iter.map(|l| l.unwrap().parse::<i32>().unwrap());
-    let mut total_fuel = 0;
-    let mut total_fuel_recursive = 0;
-
-    for mass in masses {
-        total_fuel += fuel_required(mass);
-        total_fuel_recursive += fuel_required_recursive(mass);
-    }
+fn main() -> io::Result<()> {
+    let contents = fs::read_to_string("1.txt")?;
+    let lines = contents.par_lines();
+    let masses = lines.map(|l| l.parse::<i32>().unwrap());
+    let (total_fuel, total_fuel_recursive) = masses
+        .fold(
+            || (0, 0),
+            |(acc_f, acc_fr), mass| (
+                acc_f + fuel_required(mass),
+                acc_fr + fuel_required_recursive(mass),
+            ),
+        )
+        .reduce(
+            || (0, 0),
+            |(acc_f, acc_fr), (f, fr)| (acc_f + f, acc_fr + fr),
+        );
 
     println!("{}", total_fuel);
     println!("{}", total_fuel_recursive);
