@@ -64,9 +64,13 @@ async fn main() -> Result<()> {
                     let fr = async { fuel_required_recursive(mass) };
                     let (res, res_r) =
                         join!(tx.send(f.await), tx_r.send(fr.await));
-                    res?;
-                    res_r?;
-                    Ok::<(), Error>(())
+                    if let Err(e) = res {
+                        Err(Error::new(e))
+                    } else if let Err(e) = res_r {
+                        Err(Error::new(e))
+                    } else {
+                        Ok(())
+                    }
                 },
             )
             .map_err(|e| eprintln!("Error: {}", e));
