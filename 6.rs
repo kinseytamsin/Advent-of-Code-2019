@@ -1,3 +1,5 @@
+#[macro_use]
+extern crate anyhow;
 extern crate nom;
 extern crate petgraph;
 
@@ -9,6 +11,7 @@ use std::io::BufReader;
 use std::io::prelude::*;
 use std::fs::File;
 
+use anyhow::Result;
 use nom::{
     IResult,
     bytes::complete::is_not,
@@ -29,14 +32,15 @@ use petgraph::{
 };
 
 macro_rules! get_or_insert_obj {
-    ($graph:expr, $nodes_map:expr, $obj_str:expr, $obj_node:ident) => {
+    ($graph:expr, $nodes_map:expr, $obj_str:expr) => {
         match $nodes_map.entry($obj_str) {
             Vacant(e) => {
-                $obj_node = $graph.add_node(());
-                e.insert($obj_node);
+                let new_node = $graph.add_node(());
+                e.insert(new_node);
+                new_node
             }
             Occupied(e) => {
-                $obj_node = *(e.get());
+                *(e.get())
             }
         }
     }
@@ -47,19 +51,19 @@ type Object = String;
 
 struct Orbit {
     object: Object,
-    target: Object
+    target: Object,
 }
 
 fn orbit_spec(input: &str) -> IResult<&str, Orbit> {
-    let (input, (target, object)) = separated_pair(
-        is_not(")"),
-        nom_char(')'),
-        is_not("\n")
-    )(input)?;
-    let object = object.to_string();
-    let target = target.to_string();
+    let parser =
+        separated_pair(
+            is_not(")"),
+            nom_char(')'),
+            is_not("\n"),
+        );
+    let (unparsed, (target, object)) = parser(input)?;
 
-    Ok((input, Orbit { object, target }))
+    Ok((unparsed, Orbit { object.to_string(), target.to_string() }))
 }
 
 type Ix = u32;
@@ -68,8 +72,9 @@ type OrbitGraph = DiGraph<(), u32, Ix>;
 type NodesMap = HashMap<String, NodeIndex>;
 
 fn get_orbit_target<VM, G>(graph: G, node: NodeIndex) -> Option<NodeIndex>
-where VM: VisitMap<NodeIndex>,
-      G: GraphRef + Visitable<NodeId = NodeIndex, Map = VM> + IntoNeighbors
+where
+    VM: VisitMap<NodeIndex>,
+    G:  GraphRef<NodeId = NodeIndex> + Visitable<Map = VM> + IntoNeighbors
 {
     let mut dfs = Dfs::new(graph, node);
     // visit self, pushing neighbor to top of search stack
@@ -78,21 +83,27 @@ where VM: VisitMap<NodeIndex>,
     dfs.next(graph)
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<()> {
     let f = File::open("6.txt")?;
     let buf_reader = BufReader::new(f);
-    let lines_iter = buf_reader.lines();
+    let lines = buf_reader.lines();
     let mut graph = OrbitGraph::new();
     let mut nodes_map = NodesMap::new();
 
-    for line in lines_iter {
-        let line: String = line?;
-        let orbit: Orbit = match orbit_spec(&line).unwrap() { (_, x) => x };
-        let Orbit { object, target } = orbit;
-        let object_node: NodeIndex;
-        let target_node: NodeIndex;
-        get_or_insert_obj!(graph, nodes_map, object, object_node);
-        get_or_insert_obj!(graph, nodes_map, target, target_node);
+    for line in lines {
+        let orbit = match orbit_spec(&line?) {
+            Ok((unparsed, x)) => {
+                if unparsed != "" {
+                    Err(anyhow!("Unparsed data in line: {}", unparsed))
+                } else {
+                    Ok(x)
+                }
+            },
+            Err(e) => Err(anyhow!("{:?}", e)),
+        };
+        let Orbit { object, target } = orbit?;
+        let object_node = get_or_insert_obj!(graph, nodes_map, object);
+        let target_node = get_or_insert_obj!(graph, nodes_map, target);
         graph.add_edge(object_node, target_node, 1);
     }
 
@@ -110,31 +121,44 @@ fn main() -> std::io::Result<()> {
 
     println!("Total orbits: {}", orbit_count);
 
-    let you_node: NodeIndex = *(nodes_map.get("YOU").unwrap());
-    let san_node: NodeIndex = *(nodes_map.get("SAN").unwrap());
-    let source_node: NodeIndex = get_orbit_target(&graph, you_node).unwrap();
-    let destination_node: NodeIndex = get_orbit_target(&graph, san_node)
-                                      .unwrap();
-    let orbital_transfers: u32;
-    if source_node == destination_node {
-        orbital_transfers = 0;
-    } else {
-        // we don't care about what is orbiting what anymore, we just
-        // want to find the shortest path between nodes, so discard
-        // direction information
-        let graph_undir = graph.into_edge_type::<Undirected>();
-        let path = astar(&graph_undir,
-                         source_node,
-                         |f| f == destination_node,
-                         |e| *e.weight(),
-                         |_| 0);
-        if let Some((k, _)) = path {
-            orbital_transfers = k;
+    let you_node =
+        *(
+            nodes_map
+                .get("YOU")
+                .ok_or_else(|| anyhow!("Failed to find YOU node"))?
+        );
+    let san_node =
+        *(
+            nodes_map
+                .get("SAN")
+                .ok_or_else(|| anyhow!("Failed to find SAN node"))?
+        );
+    let source_node =
+        get_orbit_target(&graph, you_node)
+            .ok_or_else(|| anyhow!("Failed to find orbit target of YOU"))?;
+    let destination_node =
+        get_orbit_target(&graph, san_node)
+            .ok_or_else(|| anyhow!("Failed to find orbit target of SAN"))?;
+    let orbital_transfers =
+        if source_node == destination_node {
+            Ok(0)
         } else {
-            panic!("Unable to find shortest path");
-        }
-    }
-    println!("Least number of orbital transfers: {}", orbital_transfers);
+            // we don't care about what is orbiting what anymore, we
+            // just want to find the shortest path between nodes, so
+            // discard direction information
+            let graph_undir = graph.into_edge_type::<Undirected>();
+            match astar(
+                &graph_undir,
+                source_node,
+                |finish| finish == destination_node,
+                |e| *e.weight(),
+                |_| 0,
+            ) {
+                Some((k, _)) => Ok(k),
+                None         => Err(anyhow!("Unable to find shortest path")),
+            }
+        };
+    println!("Least number of orbital transfers: {}", orbital_transfers?);
 
     Ok(())
 }
