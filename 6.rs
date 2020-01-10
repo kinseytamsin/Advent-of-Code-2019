@@ -6,24 +6,24 @@ use std::{
     error::Error as StdError,
     marker::Unpin,
     pin::Pin,
-    sync::Arc,
+    result::Result as StdResult,
+    sync::{Arc, mpsc::RecvError},
+    task::{Context, Poll},
 };
+
 use anyhow::{anyhow, Error, Result};
 use broadcaster::BroadcastChannel;
 use futures::{
     prelude::*,
-    join,
     channel::mpsc,
     lock::Mutex,
-    stream::Stream,
-    sink::Sink,
 };
 use nom::{
     IResult,
     bytes::complete::is_not,
+    character::complete::char as nom_char,
     sequence::separated_pair,
 };
-use nom::character::complete::char as nom_char;
 use petgraph::{
     algo::astar,
     graph::DiGraph,
@@ -73,6 +73,49 @@ struct Orbit {
 #[derive(Clone)]
 struct OrbitGraphMap(OrbitGraph, NodesMap);
 
+#[derive(Debug)]
+struct Recv<'a, St: ?Sized> {
+    stream: &'a mut St,
+}
+
+impl<St: ?Sized + Unpin> Unpin for Recv<'_, St> {}
+
+impl<'a, St: ?Sized + Stream + Unpin> Recv<'a, St> {
+    fn new(stream: &'a mut St) -> Self {
+        Recv { stream }
+    }
+}
+
+impl<St> future::FusedFuture for Recv<'_, St>
+where
+    St: ?Sized + stream::FusedStream + Unpin
+{
+    fn is_terminated(&self) -> bool {
+        self.stream.is_terminated()
+    }
+}
+
+impl<St: ?Sized + Stream + Unpin> Future for Recv<'_, St> {
+    type Output = StdResult<St::Item, std::sync::mpsc::RecvError>;
+
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
+        self.stream
+            .poll_next_unpin(cx)
+            .map(|x| x.ok_or(RecvError))
+    }
+}
+
+trait RecvExt: Stream {
+    fn recv(&mut self) -> Recv<'_, Self> where Self: Unpin {
+        Recv::new(self)
+    }
+}
+
+impl<T: ?Sized> RecvExt for T where T: Stream {}
+
 fn orbit_spec(input: &str) -> IResult<&str, Orbit> {
     let parser =
         separated_pair(
@@ -113,7 +156,7 @@ where
         Arc::new(
             Mutex::new(OrbitGraphMap(OrbitGraph::new(), NodesMap::new()))
         );
-    while let Some(orbit) = rx_orbits.next().await {
+    while let Ok(orbit) = rx_orbits.recv().await {
         let graph_mtx = Arc::clone(&orbit_graph_map);
         let graph_mtx2 = Arc::clone(&orbit_graph_map);
         let orbit_chan = BroadcastChannel::new();
@@ -122,23 +165,23 @@ where
         let (_, mut rx_orbit2) = orbit_chan2.split();
         let get_object_node_fut = async {
             let (mut graph_map, orbit) =
-                join!(
-                    graph_mtx.lock(),
-                    rx_orbit.next().map(|x: Option<Orbit>| x.unwrap()),
-                );
+                future::try_join(
+                    graph_mtx.lock().map(Ok),
+                    rx_orbit.recv(),
+                ).await?;
             let OrbitGraphMap(ref mut graph, ref mut nodes_map) = *graph_map;
             let Orbit { ref object, .. } = orbit;
-            get_or_insert_obj!(graph, nodes_map, object.to_owned())
+            Ok(get_or_insert_obj!(graph, nodes_map, object.to_owned()))
         };
         let get_target_node_fut = async {
             let (mut graph_map, orbit) =
-                join!(
-                    graph_mtx2.lock(),
-                    rx_orbit2.next().map(|x: Option<Orbit>| x.unwrap()),
-                );
+                future::try_join(
+                    graph_mtx2.lock().map(Ok),
+                    rx_orbit2.recv(),
+                ).await?;
             let OrbitGraphMap(ref mut graph, ref mut nodes_map) = *graph_map;
             let Orbit { ref target, .. } = orbit;
-            get_or_insert_obj!(graph, nodes_map, target.to_owned())
+            Ok(get_or_insert_obj!(graph, nodes_map, target.to_owned()))
         };
         let (_, object_node, target_node) =
             future::try_join3(
@@ -147,8 +190,8 @@ where
                     tx_orbit.close().await?;
                     Ok::<_, Error>(())
                 },
-                get_object_node_fut.map(Ok),
-                get_target_node_fut.map(Ok),
+                get_object_node_fut,
+                get_target_node_fut,
             ).await?;
         let OrbitGraphMap(ref mut graph, _) = *orbit_graph_map.lock().await;
         graph.add_edge(object_node, target_node, 1);
@@ -158,11 +201,11 @@ where
     Ok(())
 }
 
-async fn count_orbits<Rx>(mut rx_graph: Rx) -> u32
+async fn count_orbits<Rx>(mut rx_graph: Rx) -> StdResult<u32, RecvError>
 where
     Rx: Stream<Item = OrbitGraphMap> + Unpin
 {
-    let OrbitGraphMap(graph, _) = rx_graph.next().await.unwrap();
+    let OrbitGraphMap(graph, _) = rx_graph.recv().await?;
     let mut orbit_count = 0;
     // count direct and indirect orbits
     for node in graph.node_indices() {
@@ -173,30 +216,30 @@ where
             orbit_count += 1;
         }
     }
-    orbit_count
+    Ok(orbit_count)
 }
 
 async fn calculate_orbital_transfers<Rx>(mut rx_graph: Rx) -> Result<u32>
 where
     Rx: Stream<Item = OrbitGraphMap> + Unpin
 {
-    let OrbitGraphMap(graph, nodes_map) = rx_graph.next().await.unwrap();
+    let OrbitGraphMap(graph, nodes_map) = rx_graph.recv().await?;
     let you_node =
         *(
             nodes_map.get("YOU")
-                .ok_or_else(|| anyhow!("Failed to find YOU node"))?
+                .ok_or_else(|| anyhow!("failed to find YOU node"))?
         );
     let san_node =
         *(
             nodes_map.get("SAN")
-                .ok_or_else(|| anyhow!("Failed to find SAN node"))?
+                .ok_or_else(|| anyhow!("failed to find SAN node"))?
         );
     let source_node =
         get_orbit_target(&graph, you_node)
-            .ok_or_else(|| anyhow!("Failed to find orbit target of YOU"))?;
+            .ok_or_else(|| anyhow!("failed to find orbit target of YOU"))?;
     let destination_node =
         get_orbit_target(&graph, san_node)
-            .ok_or_else(|| anyhow!("Failed to find orbit target of SAN"))?;
+            .ok_or_else(|| anyhow!("failed to find orbit target of SAN"))?;
 
     if source_node == destination_node {
         Ok(0)
@@ -213,7 +256,7 @@ where
             |_| 0,
         ) {
             Some((k, _)) => Ok(k),
-            None         => Err(anyhow!("Unable to find shortest path")),
+            None         => Err(anyhow!("unable to find shortest path")),
         }
     }
 }
@@ -230,7 +273,7 @@ async fn main() -> Result<()> {
                 let (unparsed, orbit) =
                     orbit_spec(&line).map_err(|e| anyhow!("{:?}", e))?;
                 if !unparsed.is_empty() {
-                    Err(anyhow!("Unparsed data in line: {}", unparsed))
+                    Err(anyhow!("unparsed data in line: {}", unparsed))
                 } else {
                     Ok(orbit)
                 }
@@ -263,7 +306,7 @@ async fn main() -> Result<()> {
     ).await?;
     let (orbit_count, orbital_transfers) =
         future::try_join(
-            count_orbits(rx_graph).map(Ok),
+            count_orbits(rx_graph).err_into::<Error>(),
             calculate_orbital_transfers(rx_graph2),
         ).await?;
     println!("Total orbits: {}", orbit_count);
