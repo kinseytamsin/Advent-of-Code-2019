@@ -1,13 +1,7 @@
-extern crate anyhow;
-#[macro_use]
-extern crate futures;
-extern crate tokio;
+use std::{iter, mem};
 
-use std::iter;
-use std::mem;
-
-use anyhow::{Result, Error};
-use futures::{prelude::*, channel::mpsc, stream};
+use anyhow::{Error, Result};
+use futures::{prelude::*, channel::mpsc};
 use tokio::{prelude::*, fs::File, io::BufReader};
 
 struct FuelReq { curr: i32 }
@@ -33,7 +27,6 @@ impl Iterator for FuelReq {
 }
 
 fn fuel_required(mass: i32) -> i32 { mass/3 - 2 }
-
 
 fn fuel_required_recursive(mass: i32) -> i32 {
     let fuel_req_iter = FuelReq::new(mass);
@@ -62,38 +55,37 @@ async fn main() -> Result<()> {
                 |(mass, (mut tx, mut tx_r))| async move {
                     let f = async { fuel_required(mass) };
                     let fr = async { fuel_required_recursive(mass) };
-                    let (res, res_r) =
-                        join!(tx.send(f.await), tx_r.send(fr.await));
-                    if let Err(e) = res {
-                        Err(Error::new(e))
-                    } else if let Err(e) = res_r {
-                        Err(Error::new(e))
-                    } else {
-                        Ok(())
-                    }
+                    future::try_join(
+                        tx.send(f.await),
+                        tx_r.send(fr.await),
+                    ).await?;
+                    Ok(())
                 },
-            )
-            .map_err(|e| eprintln!("Error: {}", e));
+            );
     // we never use the original Senders, only clones of them, so drop
     // the originals
     mem::drop(tx);
     mem::drop(tx_r);
-    let sum_f_fut = async move {
+    let sum_f_fut = async {
         let mut total_fuel = 0;
         while let Some(f) = rx.next().await {
             total_fuel += f;
         }
         total_fuel
     };
-    let sum_fr_fut = async move {
+    let sum_fr_fut = async {
         let mut total_fuel_recursive = 0;
         while let Some(fr) = rx_r.next().await {
             total_fuel_recursive += fr;
         }
         total_fuel_recursive
     };
-    tokio::spawn(calculation_fut);
-    let (total_fuel, total_fuel_recursive) = join!(sum_f_fut, sum_fr_fut);
+    let (_, total_fuel, total_fuel_recursive) =
+        future::try_join3(
+            calculation_fut,
+            sum_f_fut.map(Ok),
+            sum_fr_fut.map(Ok),
+        ).await?;
     println!("{}", total_fuel);
     println!("{}", total_fuel_recursive);
 
