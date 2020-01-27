@@ -1,3 +1,6 @@
+#!/usr/bin/env node
+'use strict';
+
 const fs = require('fs');
 const readline = require('readline');
 const stream = require('stream');
@@ -37,9 +40,15 @@ function fuelRequired(mass) {
 const resultStream = new Transform({
     transform: function(line, enc, cb) {
         let mass = parseInt(line);
-        this.push({
-            'fuel': fuelRequired(mass),
-            'fuelRecursive': fuelRequiredRecursive(mass)
+        let calculate = Promise.all([
+            Promise.resolve(fuelRequired(mass)),
+            Promise.resolve(fuelRequiredRecursive(mass))
+        ]);
+        calculate.then((results) => {
+            this.push({
+                'fuel': results[0],
+                'fuelRecursive': results[1]
+            });
         });
         cb();
     },
@@ -57,8 +66,16 @@ let totalFuel = 0;
 let totalFuelRecursive = 0;
 
 resultStream.on('data', (result) => {
-    totalFuel += result.fuel;
-    totalFuelRecursive += result.fuelRecursive;
+    Promise.all([
+        new Promise((resolve, reject) => {
+            totalFuel += result.fuel;
+            resolve();
+        }),
+        new Promise((resolve, reject) => {
+            totalFuelRecursive += result.fuelRecursive;
+            resolve();
+        })
+    ]);
 });
 
 rl.on('close', () => {
