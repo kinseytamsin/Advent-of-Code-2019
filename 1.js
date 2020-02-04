@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 "use strict";
+/* jshint esversion: 6 */
 
 const fs = require("fs");
 const readline = require("readline");
