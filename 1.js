@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-'use strict';
+"use strict";
 
-const fs = require('fs');
-const readline = require('readline');
-const stream = require('stream');
-const Transform = stream.Transform || require('readable-stream').Transform;
+const fs = require("fs");
+const readline = require("readline");
+const stream = require("stream");
+const Transform = stream.Transform || require("readable-stream").Transform;
 
 class FuelReq {
     constructor(curr) {
@@ -46,8 +46,8 @@ const resultStream = new Transform({
         ]);
         calculate.then((results) => {
             this.push({
-                'fuel': results[0],
-                'fuelRecursive': results[1]
+                "fuel": results[0],
+                "fuelRecursive": results[1]
             });
         });
         cb();
@@ -55,17 +55,17 @@ const resultStream = new Transform({
     readableObjectMode: true
 });
 const rl = readline.createInterface({
-    input: fs.createReadStream('1.txt')
+    input: fs.createReadStream("1.txt")
 });
 
-rl.on('line', (line) => {
+rl.on("line", (line) => {
     resultStream.write(line);
 });
 
 let totalFuel = 0;
 let totalFuelRecursive = 0;
 
-resultStream.on('data', (result) => {
+resultStream.on("data", (result) => {
     Promise.all([
         new Promise((resolve, reject) => {
             totalFuel += result.fuel;
@@ -78,7 +78,7 @@ resultStream.on('data', (result) => {
     ]);
 });
 
-rl.on('close', () => {
-    console.log('%d', totalFuel);
-    console.log('%d', totalFuelRecursive);
+rl.on("close", () => {
+    console.log("%d", totalFuel);
+    console.log("%d", totalFuelRecursive);
 });
