@@ -6,23 +6,23 @@ const readline = require('readline');
 const stream = require('stream');
 const Transform = stream.Transform || require('readable-stream').Transform;
 
-function FuelReq(curr) {
-    this.curr = curr;
-}
-
-FuelReq.prototype[Symbol.iterator] = function() {
-    return this;
-};
-
-FuelReq.prototype.next = function() {
-    // fuelRequired(x) > 0 -> x > 6
-    if (this.curr <= 6) {
-        return { done: true };
-    } else {
-        this.curr = fuelRequired(this.curr);
-        return { value: this.curr };
+class FuelReq {
+    constructor(curr) {
+        this.curr = curr;
     }
-};
+    [Symbol.iterator]() {
+        return this;
+    }
+    next() {
+        // fuelRequired(x) > 0 -> x > 6
+        if (this.curr <= 6) {
+            return { done: true };
+        } else {
+            this.curr = fuelRequired(this.curr);
+            return { value: this.curr };
+        }
+    }
+}
 
 function fuelRequiredRecursive(mass) {
     let fuelReqIter = new FuelReq(mass);
@@ -38,7 +38,7 @@ function fuelRequired(mass) {
 }
 
 const resultStream = new Transform({
-    transform: function(line, enc, cb) {
+    transform(line, enc, cb) {
         let mass = parseInt(line);
         let calculate = Promise.all([
             Promise.resolve(fuelRequired(mass)),
