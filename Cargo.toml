@@ -1,0 +1,47 @@
+[package]
+name = "advent-of-code-2019"
+version = "0.1.0"
+authors = ["Kinsey Favre <kinseytamsin@tutanota.com>"]
+edition = "2018"
+autobins = false
+publish = false
+
+[features]
+d1 = ["anyhow", "futures", "tokio"]
+d2 = ["itertools"]
+d6 = ["anyhow", "broadcaster", "futures", "nom", "petgraph", "tokio"]
+d8 = ["image"]
+
+[[bin]]
+name = "1"
+path = "1.rs"
+required-features = ["d1"]
+
+[[bin]]
+name = "2"
+path = "2.rs"
+required-features = ["d2"]
+
+[[bin]]
+name = "6"
+path = "6.rs"
+required-features = ["d6"]
+
+[[bin]]
+name = "8"
+path = "8.rs"
+required-features = ["d8"]
+
+[dependencies]
+anyhow = { version = "1.0.26", optional = true }
+broadcaster = { version = "1.0.0", optional = true }
+futures = { version = "0.3.3", optional = true }
+image = { version = "0.22.4", optional = true }
+itertools = { version = "0.8.2", optional = true }
+nom = { version = "5.1.0", optional = true }
+petgraph = { version = "0.5.0", optional = true }
+
+[dependencies.tokio]
+version = "0.2.11"
+features = ["rt-threaded", "io-util", "macros", "stream", "fs"]
+optional = true
